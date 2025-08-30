@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,100 +9,137 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 )
 
 func main() {
 	githubCredentials := cli()
+	//////////////////////////////////////:
+	var wg sync.WaitGroup
+	wg.Add(2)
 	const followersEndpoint = "followers"
-	var followers Result
-	getDatafromGithub(githubCredentials, followersEndpoint, &followers)
-	filefollowers := "followers.txt"
-	if followers.err == nil {
-		fmt.Printf("writing to file %s ...\n", filefollowers)
-		file, err := os.Create(filefollowers)
-		if err != nil {
-			fmt.Printf("failed to create file %s because err: %s\n", filefollowers, err.Error())
-		}
-		defer file.Close()
-		for _, v := range followers.data {
-			str := fmt.Sprintf("userlogin = %s  |  id = %8d  url = %s \n", v.Login, v.ID, v.HTMLURL)
-			file.WriteString(str)
-			delimeter := []byte("------------------------------------------------------------------------\n")
-			file.Write(delimeter)
-		}
-	}
 	const followingEndpoint = "following"
-	var following Result
-	getDatafromGithub(githubCredentials, followingEndpoint, &following)
-	filefollowing := "following.txt"
-	if following.err == nil {
-		fmt.Printf("writing to file %s ...\n", filefollowing)
-		file, err := os.Create(filefollowing)
-		if err != nil {
-			fmt.Printf("failed to create file %s because err: %s\n", filefollowing, err.Error())
-		}
-		defer file.Close()
-		for _, v := range following.data {
-			str := fmt.Sprintf("userlogin = %s  |  id = %8d  url = %s \n", v.Login, v.ID, v.HTMLURL)
-			file.WriteString(str)
-			delimeter := []byte("------------------------------------------------------------------------\n")
-			file.Write(delimeter)
-		}
+	var followers, following Result
+	FileNameOfFollowers := "followers.csv"
+	FileNameOfFollowing := "following.csv"
+	FileNameOfWhoDoesntFollowBack := "WhoDoesntFollowBack.md"
+	go getDatafromGithub(githubCredentials, followersEndpoint, &followers, &wg)
+	go getDatafromGithub(githubCredentials, followingEndpoint, &following, &wg)
+	wg.Wait()
+	if following.err == nil && followers.err == nil {
+		wg.Add(2)
+		go createAndWriteToFile(FileNameOfFollowers, &followers, &wg)
+		go createAndWriteToFile(FileNameOfFollowing, &following, &wg)
+		wg.Wait()
+		getWhoDosntFollowBack(FileNameOfWhoDoesntFollowBack, FileNameOfFollowers, FileNameOfFollowing)
 	}
-	fmt.Println("===========================================================================")
-	fmt.Printf("Two files were created : %s and %s \n", filefollowers, filefollowing)
-	fmt.Println("===========================================================================")
+	/////////////////////////////////////////////////////////////////////
+	fmt.Println("                                                                           ")
+	fmt.Printf("Three files (csv format) were created!\n")
+	fmt.Printf("%s : containing the list of users <YOU FOLLOW>  \n", FileNameOfFollowing)
+	fmt.Printf("%s : containing the list of users <WHO FOLLOW YOU>  \n", FileNameOfFollowers)
+	fmt.Printf("%s : containing the list of users <YOU FOLLOW BUT THEY DON'T FOLLOW YOU BACK>  \n", FileNameOfWhoDoesntFollowBack)
+	fmt.Println("                                                                           ")
 }
 
-/// // ////////followButTheydontfollowBck
-// TODO: you follow But They dont follow back in one file or output to terminal
-/// func followButTheydontfollowBck(input1 Result, input2 Result) [][]string {
-/// 	len1 := len(input1.data)
-/// 	len2 := len(input2.data)
-/// 	uniqueUSername := make(map[string][]string)
-/// 	for i := range len1 {
-/// 		v1 := input1.data[i].Login
-/// 		htmlURL1 := input1.data[i].HtmlURL
-/// 		id1 := input1.data[i].ID
-/// 		id1AsStr := strconv.Itoa(int(id1))
-/// 		uniqueUSername[v1] = append(uniqueUSername[v1], v1)
-/// 		uniqueUSername[v1] = append(uniqueUSername[v1], id1AsStr)
-/// 		uniqueUSername[v1] = append(uniqueUSername[v1], htmlURL1)
-/// 	}
-/// 	for i := range len2 {
-/// 		v2 := input2.data[i].Login
-/// 		htmlURL2 := input2.data[i].HtmlURL
-/// 		id2 := input2.data[i].ID
-/// 		id2AsStr := strconv.Itoa(int(id2))
-/// 		uniqueUSername[v2] = append(uniqueUSername[v2], v2)
-/// 		uniqueUSername[v2] = append(uniqueUSername[v2], id2AsStr)
-/// 		uniqueUSername[v2] = append(uniqueUSername[v2], htmlURL2)
-/// 	}
-/// 	result := make([][]string, 30)
-/// 	for key := range uniqueUSername {
-/// 		value, ok := uniqueUSername[key]
-/// 		if ok {
-/// 			result = append(result, value)
-/// 		}
-/// 	}
-/// 	return result
-/// }
+func createAndWriteToFile(nameOfFile string, dataFromGithub *Result, wg *sync.WaitGroup) {
+	defer wg.Done()
+	fmt.Printf(">>>> begin writing to file %s ...\n", nameOfFile)
+	file, erro := os.Create(nameOfFile)
+	if erro != nil {
+		log.Fatalf("ERROR: Could not create file %s because of error = %s\n", nameOfFile, erro.Error())
+	}
+	defer file.Close()
+	str := "login,id,html_url\n"
+	file.WriteString(str)
+	for _, v := range dataFromGithub.data {
+		str := fmt.Sprintf("%s,%s\n", v.Login, v.HtmlURL)
+		file.WriteString(str)
+	}
+	fmt.Printf(">>>> finished writing to file %s ...\n", nameOfFile)
+}
+
+// IT GENERAT MARKDOWN FILE OF USERS WHO DONT FOLLOW BACK
+func getWhoDosntFollowBack(nameOfFile string, FileNameOfFollowers string, FileNameOfFollowing string) {
+	file, erro := os.Create(nameOfFile)
+	if erro != nil {
+		log.Fatalf("ERROR: Could not create file %s because of error = %s\n", nameOfFile, erro.Error())
+	}
+	defer file.Close()
+	followersBytes, err1 := os.ReadFile(FileNameOfFollowers)
+	if err1 != nil {
+		log.Fatalf("ERROR: Could not create file %s because of error = %s\n", nameOfFile, err1.Error())
+	}
+	/////////////////////////////////:
+	followingBytes, err2 := os.ReadFile(FileNameOfFollowing)
+	if err2 != nil {
+		log.Fatalf(
+			"ERROR: Could not create file %s because of error = %s\n",
+			nameOfFile,
+			err2.Error(),
+		)
+	}
+	newline := []byte("\n")
+	linesFollowers := bytes.Split(followersBytes[1:len(followersBytes)-1], newline)
+	linesFollowing := bytes.Split(followingBytes[1:len(followingBytes)-1], newline)
+	comma := []byte(",")
+	numberofCommas := bytes.Count(linesFollowers[0], comma)
+	result := make(map[string]string)
+	for _, line := range linesFollowers {
+		vSplitInTwo := bytes.SplitN(line, comma, numberofCommas)
+		key := strings.TrimSpace(string(vSplitInTwo[0]))
+		value := strings.TrimSpace(string(vSplitInTwo[1]))
+		_, ok := result[key]
+		if !ok {
+			result[key] = value
+		}
+
+	}
+	for _, line := range linesFollowing {
+		vSplitInTwo := bytes.SplitN(line, comma, numberofCommas)
+		key := strings.TrimSpace(string(vSplitInTwo[0]))
+		value := strings.TrimSpace(string(vSplitInTwo[1]))
+		_, ok := result[key]
+		if ok {
+			delete(result, key)
+		} else {
+			result[key] = value
+		}
+
+	}
+	fmt.Printf(">>>> begin writing to file %s ...\n", nameOfFile)
+
+	Title := "# List of users <YOU FOLLOW BUT THEY DON'T FOLLOW YOU BACK>\n"
+	file.WriteString(Title)
+	for k, v := range result {
+		tempStr := fmt.Sprintf("[%s](%s)\n", k, v)
+		file.WriteString(tempStr)
+	}
+	fmt.Printf(">>>> finished writing to file %s \n", nameOfFile)
+}
 
 func cli() [2]string {
-	fmt.Println("-----------------------Github follower/Unfollower tool--------------------------------")
+	fmt.Println("*****************************************************************************************")
+	fmt.Println("********************   GITHUB FOLLOWER/UNFOLLOWER FETCHER   *****************************")
+	fmt.Println("*****************************************************************************************")
 	var inputs [2]string
 	for {
-		fmt.Printf("Please Enter your Github Username : ")
+		fmt.Printf(">>>> Please Enter your Github Username :    ")
 		s := ""
 		n, err1 := fmt.Scanln(&s)
 		inputs[0] = strings.TrimSpace(s)
 
 		s = ""
-		fmt.Printf("Please Enter your Github Token : ")
+		fmt.Printf(">>>> Please Enter your Github Token :    ")
 		m, err2 := fmt.Scanln(&s)
 		inputs[1] = strings.TrimSpace(s)
 		if err1 != nil || err2 != nil {
-			log.Fatal(err1, err2)
+			if err1 != nil {
+				log.Fatalf("ERROR : An error occured while processing the inputs err= %s\n", err1)
+			}
+			if err2 != nil {
+				log.Fatalf("ERROR : An error occured while processing the inputs err= %s\n", err2)
+			}
 		}
 		if n == 1 && m == 1 {
 			break
@@ -123,7 +161,8 @@ type Result struct {
 //
 // /Assume theres only one page
 
-func getDatafromGithub(githubCredential [2]string, endpoint string, result *Result) {
+func getDatafromGithub(githubCredential [2]string, endpoint string, result *Result, wg *sync.WaitGroup) {
+	defer wg.Done()
 	const GITHUBAPIURL = "https://api.github.com"
 	// url := fmt.Sprint(GithubAPIURL, "/users/", githubCredential[0], "/", endpoint, "?per_page=100")
 	url := fmt.Sprintf("%s/users/%s/%s", GITHUBAPIURL, githubCredential[0], endpoint)
@@ -151,9 +190,10 @@ func getDatafromGithub(githubCredential [2]string, endpoint string, result *Resu
 		return
 	}
 	defer resp.Body.Close()
-	fmt.Println("---------------------------")
-	fmt.Println(" resp.Status=", resp.Status)
-	fmt.Println("---------------------------")
+	fmt.Println("                                                      ")
+	fmt.Println(">>>>Fetching data from  ", resp.Request.URL)
+	fmt.Println(">>>>resp.Status   ", resp.Status)
+	fmt.Println("                                                      ")
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		fmt.Println("Error occured while reading the request.Body into the buffer err : ", err)
@@ -161,10 +201,10 @@ func getDatafromGithub(githubCredential [2]string, endpoint string, result *Resu
 		result.err = err
 		return
 	}
-	//	fmt.Println("-----respBody---------")
-	//	fmt.Println(string(respBody))
-	//	fmt.Println("-----respBody---------")
 	var response []Response // the array of struct that we decode to
+	fmt.Println("                                                      ")
+	fmt.Println("Begin Deserializing data ...")
+
 	error := json.Unmarshal(respBody, &response)
 	if error != nil {
 		fmt.Println("Error occured while decoding json response err : ", err)
@@ -172,6 +212,8 @@ func getDatafromGithub(githubCredential [2]string, endpoint string, result *Resu
 		result.err = err
 		return
 	}
+	fmt.Println("Finished Deserializing data with no errors ...")
+	fmt.Println("                                                      ")
 	/////
 	result.data = response
 	result.err = nil
@@ -202,24 +244,22 @@ func getDatafromGithub(githubCredential [2]string, endpoint string, result *Resu
 
 type Response struct {
 	Login string `json:"login"`
-	ID    uint64 `json:"id"`
-	//////
-	//iam ignoring these fields
-	/////
-	//nodeID            string
-	//avatarURL         string
-	//gravataID         string
-	//URL string `json:"url"`
-	HTMLURL string `json:"html_url"`
-	// followersURL      string
-	// followingURL      string
-	// gistsURL          string
-	// starredURL        string
-	// subscriptionsURL  string
-	// organizationsURL  string
-	// reposURL          string
-	// eventsURL         string
-	// receivedEventsURL string
-	// typeUser          string
-	// siteAdmin         bool
+	// i am ignoring these fields
+	// ID                uint64 `json:"id"`
+	// NodeID            string `json:"node_id"`
+	// AvatarURL         string `json:"avatar_url"`
+	// GravatarID        string `json:"gravatar_url"`
+	// URL               string `json:"url"`
+	HtmlURL string `json:"html_url"`
+	// FollowersURL      string `json:"followers_url"`
+	// FollowingURL      string `json:"following_url"`
+	// GistsURL          string `json:"gists_url"`
+	// StarredURL        string `json:"starred_url"`
+	// SubscriptionsURL  string `json:"subscriptions_url"`
+	// OrganizationsURL  string `json:"organizations_url"`
+	// ReposURL          string `json:"repos_url"`
+	// EventsURL         string `json:"events_url"`
+	// ReceivedEventsURL string `json:"received_events_url"`
+	// Type              string `json:"type"`
+	// SiteAdmin         bool   `json:"site_admin"`
 }
