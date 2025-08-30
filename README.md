@@ -33,7 +33,6 @@ Token Authentication: The program requests a GitHub personal access token (with 
 
 ```console
 >>>> Please Enter your Github Token :   Your_Github_Token 
-"
 ```
 Enter your github auth token and press Enter
 
